@@ -1,5 +1,6 @@
 pub mod poll;
 pub mod socket;
+pub mod socket_wamr;
 #[cfg(feature = "wasi_poll")]
 pub mod wasi_poll;
 #[cfg(not(feature = "wasi_poll"))]
@@ -180,11 +181,7 @@ impl TcpListener {
         let bind = |addrs, nonblocking| {
             let addr_family = socket::AddressFamily::from(&addrs);
             let s = socket::Socket::new(addr_family, socket::SocketType::Stream)?;
-            s.setsockopt(
-                socket::SocketOptLevel::SolSocket,
-                socket::SocketOptName::SoReuseaddr,
-                1i32,
-            )?;
+            s.setsockopt_socket(socket_wamr::SocketOptName::SoReuseaddr(true))?;
             s.bind(&addrs)?;
             s.listen(128)?;
             s.set_nonblocking(nonblocking)?;
@@ -330,41 +327,25 @@ pub fn nslookup(node: &str, service: &str) -> std::io::Result<Vec<SocketAddr>> {
 pub fn nslookup_with_host(node: &str, service: &str) -> std::io::Result<Vec<SocketAddr>> {
     use socket::WasiAddrinfo;
     let hints: WasiAddrinfo = WasiAddrinfo::default();
-    let mut sockaddrs = Vec::new();
-    let mut sockbuffs = Vec::new();
-    let mut ai_canonnames = Vec::new();
-    let addrinfos = WasiAddrinfo::get_addrinfo(
-        &node,
-        &service,
-        &hints,
-        10,
-        &mut sockaddrs,
-        &mut sockbuffs,
-        &mut ai_canonnames,
-    )?;
+    let addrinfos = WasiAddrinfo::get_addrinfo(&node, &service, &hints, 10)?;
 
     let mut r_addrs = vec![];
     for i in 0..addrinfos.len() {
         let addrinfo = &addrinfos[i];
-        let sockaddr = &sockaddrs[i];
-        let sockbuff = &sockbuffs[i];
 
-        if addrinfo.ai_addrlen == 0 {
-            continue;
-        }
-
-        let addr = match sockaddr.family {
-            socket::AddressFamily::Unspec => {
-                //unimplemented!("not support unspec")
-                continue;
-            }
-            socket::AddressFamily::Inet4 => {
-                let port_buf = [sockbuff[0], sockbuff[1]];
-                let port = u16::from_be_bytes(port_buf);
-                let ip = Ipv4Addr::new(sockbuff[2], sockbuff[3], sockbuff[4], sockbuff[5]);
+        let addr = match addrinfo.addr.kind {
+            socket_wamr::WasiAddrType::IPv4 => {
+                let port = unsafe { addrinfo.addr.addr.ip4.port };
+                let wamr_ipv4_addr = unsafe { addrinfo.addr.addr.ip4.addr };
+                let ip = Ipv4Addr::new(
+                    wamr_ipv4_addr.n0,
+                    wamr_ipv4_addr.n1,
+                    wamr_ipv4_addr.n2,
+                    wamr_ipv4_addr.n3,
+                );
                 SocketAddr::V4(SocketAddrV4::new(ip, port))
             }
-            socket::AddressFamily::Inet6 => {
+            socket_wamr::WasiAddrType::IPv6 => {
                 //unimplemented!("not support IPv6")
                 continue;
             }
