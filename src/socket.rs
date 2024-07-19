@@ -331,7 +331,7 @@ mod wasi_sock {
     #[link(wasm_import_module = "wasi_snapshot_preview1")]
     extern "C" {
         // pub fn sock_open(addr_family: u8, sock_type: u8, fd: *mut u32) -> u32;
-        pub fn sock_bind(fd: u32, addr: *mut WasiAddress, port: u32) -> u32;
+        // pub fn sock_bind(fd: u32, addr: *mut WasiAddress, port: u32) -> u32;
         pub fn sock_listen(fd: u32, backlog: u32) -> u32;
         pub fn sock_accept(fd: u32, fd: *mut u32) -> u32;
         // pub fn sock_connect(fd: u32, addr: *mut WasiAddress, port: u32) -> u32;
@@ -383,7 +383,8 @@ mod wasi_sock {
         //     addr_type: *mut u32,
         //     port: *mut u32,
         // ) -> u32;
-        pub fn sock_getsockopt( // I just commented it's usage when in fact it needs to be substituted with WAMR socket ext apis
+        pub fn sock_getsockopt(
+            // I just commented it's usage when in fact it needs to be substituted with WAMR socket ext apis
             fd: u32,
             level: i32,
             name: i32,
@@ -392,7 +393,8 @@ mod wasi_sock {
         ) -> u32;
 
         #[allow(unused)]
-        pub fn sock_setsockopt( // I replaced its usage everywhere where found possible, but it could've been enough only for POC
+        pub fn sock_setsockopt(
+            // I replaced its usage everywhere where found possible, but it could've been enough only for POC
             fd: u32,
             level: i32,
             name: i32,
@@ -410,7 +412,9 @@ pub struct Socket {
 use std::time::Duration;
 use wasi_sock::*;
 
-use crate::socket_wamr::{self, WasiAddrIp4, WasiAddrIp4Port};
+use crate::socket_wamr::{
+    self, WasiAddrIp4, WasiAddrIp4Port, WasiAddrIp6, WasiAddrIp6Port, WasiAddrUnion,
+};
 
 fn from_timeval(duration: libc::timeval) -> Option<Duration> {
     if duration.tv_sec == 0 && duration.tv_usec == 0 {
@@ -971,35 +975,59 @@ impl Socket {
     }
 
     pub fn bind(&self, addrs: &SocketAddr) -> io::Result<()> {
-        unsafe {
-            let fd = self.as_raw_fd();
-            let mut vaddr: [u8; 16] = [0; 16];
-            let port;
-            let size;
-            match addrs {
-                SocketAddr::V4(addr) => {
-                    let ip = addr.ip().octets();
-                    (&mut vaddr[0..4]).clone_from_slice(&ip);
-                    port = addr.port();
-                    size = 4;
-                }
-                SocketAddr::V6(addr) => {
-                    let ip = addr.ip().octets();
-                    vaddr.clone_from_slice(&ip);
-                    port = addr.port();
-                    size = 16;
-                }
+        println!("BIND godjan");
+        let fd = self.as_raw_fd();
+        let port;
+        let wamr_addr = match addrs {
+            SocketAddr::V4(addr) => {
+                let ip = addr.ip().octets();
+                port = addr.port();
+                let result = socket_wamr::WasiAddr {
+                    kind: socket_wamr::WasiAddrType::IPv4,
+                    addr: WasiAddrUnion {
+                        ip4: WasiAddrIp4Port {
+                            addr: WasiAddrIp4 {
+                                n0: ip[0],
+                                n1: ip[1],
+                                n2: ip[2],
+                                n3: ip[3],
+                            },
+                            port: port,
+                        },
+                    },
+                };
+                result
             }
-            let mut addr = WasiAddress {
-                buf: vaddr.as_ptr(),
-                size,
-            };
-            let res = sock_bind(fd as u32, &mut addr, port as u32);
-            if res != 0 {
-                Err(io::Error::from_raw_os_error(res as i32))
-            } else {
-                Ok(())
+            SocketAddr::V6(addr) => {
+                let ip = addr.ip().octets();
+                port = addr.port();
+                let result = socket_wamr::WasiAddr {
+                    kind: socket_wamr::WasiAddrType::IPv6,
+                    addr: WasiAddrUnion {
+                        ip6: WasiAddrIp6Port {
+                            addr: WasiAddrIp6 {
+                                n0: ip[0] as u16,
+                                n1: ip[1] as u16,
+                                n2: ip[2] as u16,
+                                n3: ip[3] as u16,
+                                h0: ip[4] as u16,
+                                h1: ip[5] as u16,
+                                h2: ip[6] as u16,
+                                h3: ip[7] as u16,
+                            },
+                            port: port,
+                        },
+                    },
+                };
+                result
             }
+        };
+        let errno = socket_wamr::wamr_sock_bind(fd as u32, &wamr_addr);
+
+        if errno != 0 {
+            Err(io::Error::from_raw_os_error(errno as i32))
+        } else {
+            Ok(())
         }
     }
 
